@@ -31,8 +31,8 @@ void add_history(char* unused) {}
 
 typedef struct {
     uint32_t id;
-    char user_name[COLUMN_USERNAME_SIZE];
-    char email[COLUMN_EMAIL_SIZE];
+    char user_name[COLUMN_USERNAME_SIZE + 1];
+    char email[COLUMN_EMAIL_SIZE + 1];
 } row;
 
 #define SIZE_OF_ATTRIBUTE(Struct, Attribute) sizeof(((Struct*)0)->Attribute)
@@ -98,6 +98,8 @@ typedef enum {
     PREPARE_SUCCESS,
     PREPARE_FAIL,
     PREPARE_SYNTAX_ERROR,
+    PREPARE_STRING_TOO_LONG,
+    PREPARE_NEGATIVE_ID,
 } prepare_result;
 
 typedef enum {
@@ -137,22 +139,42 @@ meta_command_result validate_mata_command(char* cmd) {
     return META_COMMAND_UNDEFINED;
 }
 
+prepare_result prepare_insert(char* input, statement* stmt) {
+    stmt->type = STATEMENT_INSERT;
+    char* keyword = strtok(input, " ");
+    char* id_str = strtok(NULL, " ");
+    char* user_name = strtok(NULL, " ");
+    char* email = strtok(NULL, " ");
+
+    if (id_str == NULL || user_name == NULL || email == NULL) {
+        return PREPARE_SYNTAX_ERROR;
+    }
+
+    int id = atoi(id_str);
+    
+    if (id < 0) {
+        return PREPARE_NEGATIVE_ID;
+    }
+
+    if (strlen(user_name) > COLUMN_USERNAME_SIZE) {
+        return PREPARE_STRING_TOO_LONG;
+    }
+
+    if (strlen(email) > COLUMN_EMAIL_SIZE) {
+        return PREPARE_STRING_TOO_LONG;
+    }
+
+    stmt->row_to_insert.id = id;
+    strcpy(stmt->row_to_insert.user_name, user_name);
+    strcpy(stmt->row_to_insert.email, email);
+
+    return PREPARE_SUCCESS;
+}
+
 prepare_result prepare_statement(char* input, statement* stmt) {
     
     if (strncmp(input, "insert", 6) == 0) {
-        stmt->type = STATEMENT_INSERT;
-        int args_assigned = sscanf(
-            input,
-            "insert %d %s %s",
-            &(stmt->row_to_insert.id),
-            &(stmt->row_to_insert.user_name),
-            &(stmt->row_to_insert.email)
-        );
-        if (args_assigned < 3) {
-            return PREPARE_SYNTAX_ERROR;
-        }
-
-        return PREPARE_SUCCESS;
+        return prepare_insert(input, stmt);
     }
 
     if (strcmp(input, "select") == 0) {
@@ -164,7 +186,7 @@ prepare_result prepare_statement(char* input, statement* stmt) {
 }
 
 void print_row(row* row) {
-    printf("%d, %s, %s\n", row->id, row->user_name, row->email);
+    printf("(%d, %s, %s)\n", row->id, row->user_name, row->email);
 }
 
 execute_result execute_insert(statement* stmt, table* tbl) {
@@ -224,6 +246,12 @@ int main(int argc, char** argv) {
             case PREPARE_SYNTAX_ERROR:
                 printf("Syntax error. Failed to parse statement.\n");
                 continue;
+            case PREPARE_STRING_TOO_LONG:
+                printf("String is too long.\n");
+                continue;
+            case PREPARE_NEGATIVE_ID:
+                printf("ID must be positive.\n");
+                continue;
             default:
             case PREPARE_FAIL:
                 printf("Unrecognized keyword at start of '%s'.\n", input);
@@ -235,7 +263,7 @@ int main(int argc, char** argv) {
                 printf("Executed.\n");
                 break;
             case EXECUTE_TATBLE_FULL:
-                printf("Error: table is full.\n");
+                printf("Error: Table is full.\n");
                 break;
         }
     }

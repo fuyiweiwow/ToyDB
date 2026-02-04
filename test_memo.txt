@@ -1,0 +1,1 @@
+test command: rspec spec spec\demo_table_test.rb
