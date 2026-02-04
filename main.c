@@ -39,10 +39,10 @@ typedef struct {
 const uint32_t ID_SIZE          = SIZE_OF_ATTRIBUTE(row, id);
 const uint32_t USERNAME_SIZE    = SIZE_OF_ATTRIBUTE(row, user_name);
 const uint32_t EMAIL_SIZE       = SIZE_OF_ATTRIBUTE(row, email);
-const uint32_t ID_OFFSET        = 0;
-const uint32_t USERNAME_OFFSET  = ID_OFFSET + ID_SIZE;
-const uint32_t EMAIL_OFFSET     = USERNAME_OFFSET + USERNAME_SIZE;
-const uint32_t ROW_SIZE         = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;
+#define ID_OFFSET        0
+#define USERNAME_OFFSET  (uint32_t)(ID_OFFSET + ID_SIZE)
+#define EMAIL_OFFSET     (uint32_t)(USERNAME_OFFSET + USERNAME_SIZE)
+#define ROW_SIZE         (uint32_t)(ID_SIZE + USERNAME_SIZE + EMAIL_SIZE)
 
 void serialize_row(row* src, void* des) {
     memcpy(des + ID_OFFSET, &(src->id), ID_SIZE);
@@ -57,10 +57,10 @@ void deserialize_row(void* src, row* des) {
 }
 
 // 4kb, same size as a page used in the virtual memory systems of most computer architectures
-const uint32_t PAGE_SIZE        = 4096;
-#define TABLE_MAX_PAGES         100
-const uint32_t ROWS_PER_PAGE    = PAGE_SIZE / ROW_SIZE;
-const uint32_t TABLE_MAX_ROWS   = ROWS_PER_PAGE * TABLE_MAX_PAGES;
+#define PAGE_SIZE        4096
+#define TABLE_MAX_PAGES  100
+#define ROWS_PER_PAGE    (uint32_t)(PAGE_SIZE / ROW_SIZE)
+#define TABLE_MAX_ROWS   (uint32_t)(ROWS_PER_PAGE * TABLE_MAX_PAGES)
 
 typedef struct {
     uint32_t num_rows;
@@ -141,7 +141,7 @@ prepare_result prepare_statement(char* input, statement* stmt) {
     
     if (strncmp(input, "insert", 6) == 0) {
         stmt->type = STATEMENT_INSERT;
-        int args_assigned = scanf(
+        int args_assigned = sscanf(
             input,
             "insert %d %s %s",
             &(stmt->row_to_insert.id),
@@ -164,7 +164,7 @@ prepare_result prepare_statement(char* input, statement* stmt) {
 }
 
 void print_row(row* row) {
-    printf("%d, %s, %s", row->id, row->user_name, row->email);
+    printf("%d, %s, %s\n", row->id, row->user_name, row->email);
 }
 
 execute_result execute_insert(statement* stmt, table* tbl) {
