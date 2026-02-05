@@ -2,6 +2,10 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 #define BUFFER_SIZE 2048
 static char buffer[BUFFER_SIZE];
@@ -26,6 +30,7 @@ void add_history(char* unused) {}
 #include <editline/history.h>
 #endif
 
+
 #define COLUMN_USERNAME_SIZE 32
 #define COLUMN_EMAIL_SIZE 255
 
@@ -46,8 +51,14 @@ const uint32_t EMAIL_SIZE       = SIZE_OF_ATTRIBUTE(row, email);
 
 void serialize_row(row* src, void* des) {
     memcpy(des + ID_OFFSET, &(src->id), ID_SIZE);
-    memcpy(des + USERNAME_OFFSET, &(src->user_name), USERNAME_SIZE);
-    memcpy(des + EMAIL_OFFSET, &(src->email), EMAIL_SIZE);
+    // memcpy(des + USERNAME_OFFSET, &(src->user_name), USERNAME_SIZE);
+    // memcpy(des + EMAIL_OFFSET, &(src->email), EMAIL_SIZE);
+    /*
+        Difference between the code follow and above is 
+        the code follow ensure the all bytes are intialized
+    */ 
+    strncpy(des + USERNAME_OFFSET, src->user_name, USERNAME_SIZE);
+    strncpy(des + EMAIL_OFFSET, src->email, EMAIL_SIZE);
 }
 
 void deserialize_row(void* src, row* des) {
@@ -63,9 +74,47 @@ void deserialize_row(void* src, row* des) {
 #define TABLE_MAX_ROWS   (uint32_t)(ROWS_PER_PAGE * TABLE_MAX_PAGES)
 
 typedef struct {
-    uint32_t num_rows;
+    int fd; //file descriptor
+    uint32_t file_length;
     void* pages[TABLE_MAX_PAGES];
+} pager;
+
+
+typedef struct {
+    uint32_t num_rows;
+    pager* pager;
 } table;
+
+
+void* get_pager(pager* pager, uint32_t page_num) {
+    if (page_num > TABLE_MAX_PAGES) {
+        printf("Attempted to fetch page number out of bounds. %d", TABLE_MAX_PAGES);
+        exit(EXIT_FAILURE);
+    }
+
+    if (pager->pages[page_num] == NULL) {
+        // Cache miss. Allocate memory and load from file
+        void* page = malloc(PAGE_SIZE); //lazy allocate memory
+        uint32_t num_pages = pager->file_length / PAGE_SIZE;
+
+        if (pager->file_length % PAGE_SIZE) {
+            num_pages += 1;
+        }
+
+        if (page_num <= num_pages) {
+            lseek(pager->fd, page_num * PAGE_SIZE, SEEK_SET);
+            ssize_t bytes_read = read(pager->fd, page, PAGE_SIZE);
+            if (bytes_read == -1) {
+                printf("Error reading file: %d\n", errno);
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        pager->pages[page_num] = page;
+    }
+
+    return pager->pages[page_num];
+}
 
 /// @brief Get page, get row and calculate row byte offset in page
 /// @param table 
@@ -73,11 +122,7 @@ typedef struct {
 /// @return row pointer base on page and offset
 void* row_slot(table* table, uint32_t row_num) {
     uint32_t page_num = row_num / ROWS_PER_PAGE; // 1.calculate page num
-    void* page = table->pages[page_num]; // 2. get page pointer
-    if (!page) { // 3. lazy allocate memory
-        page = table->pages[page_num] = malloc(PAGE_SIZE);
-    }
-
+    void* page = get_pager(table->pager, page_num); // 2. get page pointer
     uint32_t row_offset = row_num % ROWS_PER_PAGE; // 4. calculate row offset in page
     uint32_t byte_offset = row_offset * ROW_SIZE; // 5. calculate byte offset
     return page + byte_offset; // 6. get location pointer
@@ -112,27 +157,108 @@ typedef struct {
     row row_to_insert;
 } statement;
 
-table* new_table() {
-    table* tbl = (table*)malloc(sizeof(table));
-    tbl->num_rows = 0;
-    for (uint32_t i = 0; i < TABLE_MAX_PAGES; i++) {
-        tbl->pages[i] = NULL;
+pager* open_pager(const char* file_name) {
+    int fd = open(file_name,
+                  O_RDWR | O_CREAT,     // Read/write mode | Create if not exist
+                  S_IWUSR | S_IRUSR    // User write permission | User read permission
+                 );
+    if (fd == -1) {
+        printf("Unable to open file\n");
+        exit(EXIT_FAILURE);
     }
+
+    off_t file_len = lseek(fd, 0, SEEK_END);
+
+    pager* pg = malloc(sizeof(pager));
+    pg->fd = fd;
+    pg->file_length = file_len;
+
+    for (uint32_t i = 0; i < TABLE_MAX_PAGES; i++) {
+        pg->pages[i] = NULL;
+    }
+    
+    return pg;
+}
+
+void page_flush(pager* pager, uint32_t page_num, uint32_t size) {
+    if (pager->pages[page_num] == NULL) {
+        printf("Attempted to flush null page\n");
+        exit(EXIT_FAILURE);
+    }
+
+    off_t offset = lseek(pager->fd, page_num * PAGE_SIZE, SEEK_SET);
+    if (offset == -1) {
+        printf("Error seeking: %d\n", errno);
+        exit(EXIT_FAILURE);
+    }
+
+    ssize_t bytes_written = write(pager->fd, pager->pages[page_num], size);
+    if (bytes_written == -1) {
+        printf("Error writing: %d\n", errno);
+        exit(EXIT_FAILURE);
+    }
+}
+
+
+table* open_db(const char* file_name) {
+    pager* pager = open_pager(file_name);
+    uint32_t num_rows = pager->file_length / ROW_SIZE;
+
+    table* tbl = malloc(sizeof(table));
+    tbl->num_rows = num_rows;
+    tbl->pager = pager;
 
     return tbl;
 }
 
-void free_table(table* tbl) {
-    for (size_t i = 0; i < TABLE_MAX_PAGES; i++) {
-        free(tbl->pages[i]);
+void close_db(table* tbl) {
+    pager* pager = tbl->pager;
+    uint32_t num_full_pages = tbl->num_rows / ROWS_PER_PAGE;
+
+    for (uint32_t i = 0; i < num_full_pages; i++) {
+        if (pager->pages[i] == NULL) {
+            continue;
+        }
+
+        page_flush(pager, i, PAGE_SIZE);
+        free(pager->pages[i]);
+        pager->pages[i] = NULL;
     }
+
+    uint32_t num_addition_rows = tbl->num_rows % ROWS_PER_PAGE;
+    if (num_addition_rows > 0) {
+        uint32_t page_num = num_full_pages;
+        if (pager->pages[page_num] != NULL) {
+            page_flush(pager, page_num, num_addition_rows * ROW_SIZE);
+            free(pager->pages[page_num]);
+            pager->pages[page_num] = NULL;
+        }
+    }
+
+    int result = close(pager->fd);
+    if (result == -1) {
+        printf("Error closing db file.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    free(pager);
     free(tbl);
 }
 
 
-meta_command_result validate_mata_command(char* cmd) {
+void free_table(table* tbl) {
+    for (size_t i = 0; i < TABLE_MAX_PAGES; i++) {
+        free(tbl->pager->pages[i]);
+    }
+    free(tbl->pager);
+    free(tbl);
+}
+
+
+meta_command_result validate_mata_command(char* cmd, table* tbl) {
 
     if (strcmp(cmd, ".exit") == 0) {
+        close_db(tbl);
         exit(EXIT_SUCCESS);
     }
 
@@ -223,13 +349,21 @@ execute_result execute_statement(statement* stmt, table* tbl) {
 }
 
 int main(int argc, char** argv) {
-    table* table = new_table();
+    
+    if (argc < 2) {
+        printf("A database filename is required.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    char* file_name = argv[1];
+    table* table = open_db(file_name);
+
     for (;;) {
         char* input = realine("tdb > ");
         add_history(input);
 
         if (input[0] == '.') {
-           switch (validate_mata_command(input)) {
+           switch (validate_mata_command(input, table)) {
                 case META_COMMAND_SUCCESS:
                     continue;
                 default:
