@@ -1,7 +1,15 @@
 describe 'database' do
+  
+  before do
+    # in linux
+    #`rm -rf ./test.db`
+    # in windows
+    `del .\\test.db`
+  end
+
   def run_script(commands)
     raw_output = nil
-    IO.popen("./build/ToyDB", "r+") do |pipe|
+    IO.popen("./build/ToyDB test.db", "r+") do |pipe|
       commands.each do |command|
         pipe.puts command
       end
