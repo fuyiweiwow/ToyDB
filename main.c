@@ -79,11 +79,32 @@ typedef struct {
     void* pages[TABLE_MAX_PAGES];
 } pager;
 
-
 typedef struct {
     uint32_t num_rows;
     pager* pager;
 } table;
+
+typedef struct {
+    table* table;
+    uint32_t row_num;
+    bool end_of_table;
+} cursor;
+
+cursor* begin_table(table* tbl) {
+    cursor* curs = malloc(sizeof(cursor));
+    curs->table = tbl;
+    curs->row_num = 0;
+    curs->end_of_table = (tbl->num_rows == 0);
+    return curs;
+}
+
+cursor* end_table(table* tbl) {
+    cursor* curs = malloc(sizeof(cursor));
+    curs->table = tbl;
+    curs->row_num = tbl->num_rows;
+    curs->end_of_table = true;
+    return curs;
+}
 
 
 void* get_pager(pager* pager, uint32_t page_num) {
@@ -116,16 +137,21 @@ void* get_pager(pager* pager, uint32_t page_num) {
     return pager->pages[page_num];
 }
 
-/// @brief Get page, get row and calculate row byte offset in page
-/// @param table 
-/// @param row_num 
+/// @brief  Get page, get row and calculate row byte offset in page
+/// @param cur 
 /// @return row pointer base on page and offset
-void* row_slot(table* table, uint32_t row_num) {
-    uint32_t page_num = row_num / ROWS_PER_PAGE; // 1.calculate page num
-    void* page = get_pager(table->pager, page_num); // 2. get page pointer
-    uint32_t row_offset = row_num % ROWS_PER_PAGE; // 4. calculate row offset in page
-    uint32_t byte_offset = row_offset * ROW_SIZE; // 5. calculate byte offset
-    return page + byte_offset; // 6. get location pointer
+void* get_cursor_value(cursor* cur) {
+    uint32_t row_num = cur->row_num;
+    uint32_t page_num = row_num / ROWS_PER_PAGE;  // calculate page num
+    void* page = get_pager(cur->table->pager, page_num);// get page pointer
+    uint32_t row_offset = row_num % ROWS_PER_PAGE; // calculate row offset in page
+    uint32_t byte_offset = row_offset * ROW_SIZE; // calculate byte offset
+    return page + byte_offset;  // get location pointer
+}
+
+void move_cursor_forward(cursor* cur) {
+    cur->row_num +=  1;
+    cur->end_of_table = cur->row_num >= cur->table->num_rows;
 }
 
 typedef enum {
@@ -322,20 +348,29 @@ execute_result execute_insert(statement* stmt, table* tbl) {
     }
 
     row* row_to_insert = &(stmt->row_to_insert);
+    cursor* cur = end_table(tbl);
 
-    serialize_row(row_to_insert, row_slot(tbl, tbl->num_rows));
+    serialize_row(row_to_insert, get_cursor_value(cur));
     tbl->num_rows += 1;
+
+    free(cur);
 
     return EXECUTE_SUCCESS;
 }
 
 execute_result execute_select(statement* stmt, table* tbl) {
+    cursor* cur = begin_table(tbl);
+
     row row;
-    for (uint32_t i = 0; i < tbl->num_rows; i++) {
-        deserialize_row(row_slot(tbl, i), &row);
+
+    while (!cur->end_of_table) {
+        deserialize_row(get_cursor_value(cur), &row);
         print_row(&row);
+        move_cursor_forward(cur);
     }
-    
+
+    free(cur);
+
     return EXECUTE_SUCCESS;
 }
 
