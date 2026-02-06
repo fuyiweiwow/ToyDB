@@ -133,7 +133,7 @@ describe 'database' do
   end
 
   it 'allows printing out the structure of a one-node btree' do
-    script = [3, 1, 2].map do |i|
+    script = [1, 2, 3].map do |i|
       "insert #{i} user#{i} person#{i}@example.com"
     end
     script << ".btree"
@@ -146,10 +146,27 @@ describe 'database' do
       "tdb > Executed.",
       "tdb > Tree:",
       "leaf (size 3)",
-      "  - 0 : 3",
-      "  - 1 : 1",
-      "  - 2 : 2",
+      "  - 0 : 1",
+      "  - 1 : 2",
+      "  - 2 : 3",
       "tdb > "
+    ])
+  end
+
+  it 'prints an error message if there is a duplicate id' do
+    script = [
+      "insert 1 user1 person1@example.com",
+      "insert 1 user1 person1@example.com",
+      "select",
+      ".exit",
+    ]
+    result = run_script(script)
+    expect(result).to match_array([
+      "tdb > Executed.",
+      "tdb > Error: Duplicate key.",
+      "tdb > (1, user1, person1@example.com)",
+      "Executed.",
+      "tdb > ",
     ])
   end
 

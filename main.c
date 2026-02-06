@@ -100,10 +100,6 @@ void* get_leaf_node_value(void* node, uint32_t cell_num) {
     return get_leaf_node_cell(node, cell_num) + LEAF_NODE_KEY_OFFSET;
 }
 
-void init_leaf_node(void* node) {
-    *get_leaf_node_cells_num(node) = 0;
-}
-
 void print_leaf_node(void* node) {
     uint32_t num_cells = *get_leaf_node_cells_num(node);
     printf("leaf (size %d)\n", num_cells);
@@ -111,6 +107,21 @@ void print_leaf_node(void* node) {
         uint32_t key = *get_leaf_node_key(node, i);
         printf("  - %d : %d\n", i, key);
     }
+}
+
+node_type get_node_type(void* node) {
+    uint8_t value = *((uint8_t*)(node + NODE_TYPE_OFFSET));
+    return (node_type)value;
+}
+
+void set_node_type(void* node, node_type nt) {
+    uint8_t value = nt;
+    *((uint8_t*)(node + NODE_TYPE_OFFSET)) = value;
+}
+
+void init_leaf_node(void* node) {
+    *get_leaf_node_cells_num(node) = 0;
+    set_node_type(node, NODE_LEAF);
 }
 
 
@@ -155,6 +166,7 @@ typedef struct {
     bool end_of_table;
 } cursor;
 
+
 void* get_page(pager* pager, uint32_t page_num) {
     if (page_num > TABLE_MAX_PAGES) {
         printf("Attempted to fetch page number out of bounds. %d", TABLE_MAX_PAGES);
@@ -190,6 +202,36 @@ void* get_page(pager* pager, uint32_t page_num) {
     return pager->pages[page_num];
 }
 
+cursor* find_leaf_node(table* tbl, uint32_t page_num, uint32_t key) {
+    void* node = get_page(tbl->pager, page_num);
+    uint32_t num_cells = *get_leaf_node_cells_num(node);
+
+    cursor* cur = malloc(sizeof(cursor));
+    cur->table = tbl;
+    cur->page_num = page_num;
+
+    // Binary search
+    uint32_t min_index = 0;
+    uint32_t one_past_max_index  = num_cells;
+    while (one_past_max_index != min_index) {
+        uint32_t index = (min_index + one_past_max_index) / 2;
+        uint32_t key_at_index = *get_leaf_node_key(node, index);
+        if (key == key_at_index) {
+            cur->cell_num = index;
+            return cur;
+        }
+
+        if (key < key_at_index) {
+            one_past_max_index = index;
+        } else {
+            min_index = index + 1;
+        }
+    }
+
+    cur->cell_num = min_index;
+    return cur;
+}
+
 cursor* begin_table(table* tbl) {
     cursor* curs = malloc(sizeof(cursor));
     curs->table = tbl;
@@ -204,16 +246,16 @@ cursor* begin_table(table* tbl) {
     return curs;
 }
 
-cursor* end_table(table* tbl) {
-    cursor* curs = malloc(sizeof(cursor));
-    curs->table = tbl;
-    curs->page_num = tbl->root_page_num;
-    void* root_node = get_page(tbl->pager, tbl->root_page_num);
-    uint32_t num_cells = *get_leaf_node_cells_num(root_node);
-    curs->cell_num = num_cells;
-    curs->end_of_table = true;
+cursor* find_table(table* tbl, uint32_t key) {
+    uint32_t root_page_num = tbl->root_page_num;
+    void* root_node = get_page(tbl->pager, root_page_num);
 
-    return curs;
+    if (get_node_type(root_node) == NODE_LEAF) {
+        return find_leaf_node(tbl, root_page_num, key);
+    } else {
+        printf("Searching internal node is not implement yet.\n");
+        exit(EXIT_FAILURE);
+    }
 }
 
 /// @brief  Get page, get row and calculate row byte offset in page
@@ -262,6 +304,7 @@ void insert_leaf_node(cursor* cur, uint32_t key, row* value) {
 typedef enum {
     EXECUTE_SUCCESS,
     EXECUTE_TATBLE_FULL,
+    EXECUTE_DUPICATE_KEY,
 } execute_result;
 
 
@@ -466,12 +509,21 @@ void print_row(row* row) {
 execute_result execute_insert(statement* stmt, table* tbl) {
 
     void* node = get_page(tbl->pager, tbl->root_page_num);
-    if ((*get_leaf_node_cells_num(node)) >= LEAF_NODE_MAX_CELLS) {
+    uint32_t num_cells = (*get_leaf_node_cells_num(node));
+    if (num_cells >= LEAF_NODE_MAX_CELLS) {
         return EXECUTE_TATBLE_FULL;
     }
 
     row* row_to_insert = &(stmt->row_to_insert);
-    cursor* cur = end_table(tbl);
+    uint32_t key_to_insert = row_to_insert->id;
+    cursor* cur = find_table(tbl, key_to_insert);
+
+    if (cur->cell_num < num_cells) {
+        uint32_t key_at_index = *get_leaf_node_key(node, cur->cell_num);
+        if (key_at_index == key_to_insert) {
+            return EXECUTE_DUPICATE_KEY;
+        }                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+    }
 
     insert_leaf_node(cur, row_to_insert->id, row_to_insert);
 
@@ -552,6 +604,9 @@ int main(int argc, char** argv) {
         switch(execute_statement(&stmt, table)) {
             case EXECUTE_SUCCESS:
                 printf("Executed.\n");
+                break;
+            case EXECUTE_DUPICATE_KEY:
+                printf("Error: Duplicate key.\n");
                 break;
             case EXECUTE_TATBLE_FULL:
                 printf("Error: Table is full.\n");
