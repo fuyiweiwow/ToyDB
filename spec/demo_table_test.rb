@@ -42,7 +42,10 @@ describe 'database' do
     end
     script << ".exit"
     result = run_script(script)
-    expect(result[-2]).to eq('tdb > Error: Table is full.')
+    expect(result.last(2)).to match_array([
+      "tdb > Executed.",
+      "tdb > ",
+    ])
   end
 
 
@@ -145,10 +148,10 @@ describe 'database' do
       "tdb > Executed.",
       "tdb > Executed.",
       "tdb > Tree:",
-      "leaf (size 3)",
-      "  - 0 : 1",
-      "  - 1 : 2",
-      "  - 2 : 3",
+      "- leaf (size 3)",
+      "  - 1",
+      "  - 2",
+      "  - 3",
       "tdb > "
     ])
   end
@@ -169,5 +172,39 @@ describe 'database' do
       "tdb > ",
     ])
   end
+
+  it 'allows printing out the structure of a 3-leaf-node btree' do
+    script = (1..14).map do |i|
+      "insert #{i} user#{i} person#{i}@example.com"
+    end
+    script << ".btree"
+    script << "insert 15 user15 person15@example.com"
+    script << ".exit"
+    result = run_script(script)
+
+    expect(result[14...(result.length)]).to match_array([
+      "tdb > Tree:",
+      "- internal (size 1)",
+      "  - leaf (size 7)",
+      "    - 1",
+      "    - 2",
+      "    - 3",
+      "    - 4",
+      "    - 5",
+      "    - 6",
+      "    - 7",
+      "  - key 7",
+      "  - leaf (size 7)",
+      "    - 8",
+      "    - 9",
+      "    - 10",
+      "    - 11",
+      "    - 12",
+      "    - 13",
+      "    - 14",
+      "tdb > Searching internal node is not implemented yet.",
+    ])
+  end
+  
 
 end
