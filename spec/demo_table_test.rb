@@ -11,7 +11,11 @@ describe 'database' do
     raw_output = nil
     IO.popen("./build/ToyDB test.db", "r+") do |pipe|
       commands.each do |command|
-        pipe.puts command
+        begin 
+          pipe.puts command
+        rescue Errno::EPIPE 
+          break
+        end
       end
 
       pipe.close_write
@@ -44,7 +48,7 @@ describe 'database' do
     result = run_script(script)
     expect(result.last(2)).to match_array([
       "tdb > Executed.",
-      "tdb > ",
+      "tdb > Updating parent after split is not implemented yet.",
     ])
   end
 
@@ -202,7 +206,8 @@ describe 'database' do
       "    - 12",
       "    - 13",
       "    - 14",
-      "tdb > Searching internal node is not implemented yet.",
+      "tdb > Executed.",
+      "tdb > ",
     ])
   end
   

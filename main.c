@@ -254,18 +254,6 @@ cursor* begin_table(table* tbl) {
     return curs;
 }
 
-cursor* find_table(table* tbl, uint32_t key) {
-    uint32_t root_page_num = tbl->root_page_num;
-    void* root_node = get_page(tbl->pager, root_page_num);
-
-    if (get_node_type(root_node) == NODE_LEAF) {
-        return find_leaf_node(tbl, root_page_num, key);
-    } else {
-        printf("Searching internal node is not implemented yet.\n");
-        exit(EXIT_FAILURE);
-    }
-}
-
 /// @brief  Get page, get row and calculate row byte offset in page
 /// @param cur 
 /// @return row pointer base on page and offset
@@ -347,6 +335,43 @@ uint32_t get_node_max_key(void* node) {
     }
 }
 
+cursor* find_internal_node(table* tbl, uint32_t page_num, uint32_t key) {
+    void* node = get_page(tbl->pager, page_num);
+    uint32_t num_keys = *get_internal_node_keys_count(node);
+
+    uint32_t low_idx = 0;
+    uint32_t high_idx = num_keys;
+
+    while (low_idx != high_idx) {
+        uint32_t idx = (low_idx + high_idx) / 2;
+        uint32_t key_to_right = *get_internal_node_key(node, idx);
+        if (key_to_right >= key) {
+            high_idx = idx;
+        } else {
+            low_idx = idx + 1;
+        }
+    }
+    
+    uint32_t child_num = *get_internal_node_child(node, low_idx);
+    void* child = get_page(tbl->pager, child_num);
+    switch (get_node_type(child)) {
+        case NODE_LEAF:
+            return find_leaf_node(tbl, child_num, key);
+        case NODE_INTERNAL:
+            return find_internal_node(tbl, child_num, key);
+    }
+}
+
+cursor* find_table(table* tbl, uint32_t key) {
+    uint32_t root_page_num = tbl->root_page_num;
+    void* root_node = get_page(tbl->pager, root_page_num);
+
+    if (get_node_type(root_node) == NODE_LEAF) {
+        return find_leaf_node(tbl, root_page_num, key);
+    } else {
+       return find_internal_node(tbl, root_page_num, key);
+    }
+}
 
 void* create_new_root(table* tbl, uint32_t right_child_page_num) {
     /*
