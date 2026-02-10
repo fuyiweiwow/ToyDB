@@ -65,7 +65,10 @@ const uint32_t EMAIL_SIZE       = SIZE_OF_ATTRIBUTE(row, email);
 */
 #define LEAF_NODE_NUM_CELLS_SIZE    (uint32_t)(sizeof(uint32_t))
 #define LEAF_NODE_NUM_CELLS_OFFSET  COMMON_NODE_HEADER_SIZE
-#define LEAF_NODE_HEADER_SIZE       (uint32_t)(COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE)
+
+#define LEAF_NODE_NEXT_LEAF_SIZE    (uint32_t)(sizeof(uint32_t))
+#define LEAF_NODE_NEXT_LEAF_OFFSET  (uint32_t)(LEAF_NODE_NUM_CELLS_OFFSET + LEAF_NODE_NUM_CELLS_SIZE)
+#define LEAF_NODE_HEADER_SIZE       (uint32_t)(COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE + LEAF_NODE_NEXT_LEAF_SIZE)
 
 /*
     Leaf node body layout
@@ -118,6 +121,10 @@ void* get_leaf_node_value(void* node, uint32_t cell_num) {
     return get_leaf_node_cell(node, cell_num) + LEAF_NODE_KEY_OFFSET;
 }
 
+uint32_t* get_leaf_node_next_leaf(void* node) {
+    return node + LEAF_NODE_NEXT_LEAF_OFFSET;
+}
+
 node_type get_node_type(void* node) {
     uint8_t value = *((uint8_t*)(node + NODE_TYPE_OFFSET));
     return (node_type)value;
@@ -130,6 +137,7 @@ void set_node_type(void* node, node_type nt) {
 
 void init_leaf_node(void* node) {
     *get_leaf_node_cells_num(node) = 0;
+    *get_leaf_node_next_leaf(node) = 0;
     set_node_type(node, NODE_LEAF);
 }
 
@@ -154,7 +162,7 @@ void deserialize_row(void* src, row* des) {
 
 // 4kb, same size as a page used in the virtual memory systems of most computer architectures
 #define PAGE_SIZE        4096
-#define TABLE_MAX_PAGES  100
+#define TABLE_MAX_PAGES  400
 
 typedef struct {
     int fd; //file descriptor
@@ -240,20 +248,6 @@ cursor* find_leaf_node(table* tbl, uint32_t page_num, uint32_t key) {
     return cur;
 }
 
-cursor* begin_table(table* tbl) {
-    cursor* curs = malloc(sizeof(cursor));
-    curs->table = tbl;
-
-    curs->page_num = tbl->root_page_num;
-    curs->cell_num = 0;
-
-    void* root_node = get_page(tbl->pager, tbl->root_page_num);
-    uint32_t num_cells = *get_leaf_node_cells_num(root_node);
-    curs->end_of_table = num_cells == 0; 
-
-    return curs;
-}
-
 /// @brief  Get page, get row and calculate row byte offset in page
 /// @param cur 
 /// @return row pointer base on page and offset
@@ -270,7 +264,13 @@ void move_cursor_forward(cursor* cur) {
 
     cur->cell_num += 1;
     if (cur->cell_num >= (*get_leaf_node_cells_num(node))) {
-        cur->end_of_table = true;
+        uint32_t next_page_num = *get_leaf_node_next_leaf(node);
+        if (next_page_num == 0) {
+            cur->end_of_table = true;
+        } else {
+            cur->page_num = next_page_num;
+            cur->cell_num = 0;
+        }
     }
 }
 
@@ -286,10 +286,9 @@ int is_node_root(void* node) {
     return (bool)value;
 }
 
-void set_node_root(void* node, bool set) {
-    uint8_t is_root = set;
-    uint8_t* value = (uint8_t*)(node + IS_ROOT_OFFSET);
-    *value = is_root;
+void set_node_root(void* node, bool is_root) {
+    uint8_t value = is_root;
+    *((uint8_t*)(node + IS_ROOT_OFFSET)) = value;
 }
 
 uint32_t* get_internal_node_keys_count(void* node) {
@@ -326,7 +325,7 @@ uint32_t* get_internal_node_key(void* node, uint32_t key_num) {
     return get_internal_node_cell(node, key_num) + INTERNAL_NODE_CHILD_SIZE; 
 }
 
-uint32_t get_node_max_key(void* node) {
+uint32_t get_node_max_key(void* node) {                                          
     switch (get_node_type(node)) {
         case NODE_INTERNAL:
             return *get_internal_node_key(node, *get_internal_node_keys_count(node) - 1);
@@ -373,6 +372,14 @@ cursor* find_table(table* tbl, uint32_t key) {
     }
 }
 
+cursor* begin_table(table* tbl) {
+    cursor* curs = find_table(tbl, 0);
+    void* node = get_page(curs->table->pager, curs->page_num);
+    uint32_t num_cells = *get_leaf_node_cells_num(node);
+    curs->end_of_table = num_cells == 0;
+    return curs;
+}
+
 void* create_new_root(table* tbl, uint32_t right_child_page_num) {
     /*
         Splitting the root.
@@ -417,6 +424,8 @@ void insert_and_split_leaf_node(cursor* cur, uint32_t key, row* value) {
     uint32_t new_page_num = get_unused_page_num(cur->table->pager);
     void* new_node = get_page(cur->table->pager, new_page_num);
     init_leaf_node(new_node);
+    *get_leaf_node_next_leaf(new_node) = *get_leaf_node_next_leaf(old_node);
+    *get_leaf_node_next_leaf(old_node) = new_page_num;
 
     /*
         All existing keys plus new key should be divided
@@ -434,7 +443,8 @@ void insert_and_split_leaf_node(cursor* cur, uint32_t key, row* value) {
         void* dest = get_leaf_node_cell(des_node, index_within_node);
 
         if (i == cur->cell_num) {
-            serialize_row(value, dest);
+            serialize_row(value, get_leaf_node_value(des_node, index_within_node));
+            *get_leaf_node_key(des_node, index_within_node) = key;
         } else if (i > cur->cell_num) {
             memcpy(dest, get_leaf_node_cell(old_node, i - 1), LEAF_NODE_CELL_SIZE);
         } else {
